@@ -1,0 +1,116 @@
+# This workflow deploys a Python application to Azure Container Apps using the workflow specified in
+# the `python-uv-docker-test-release-push.yml` template.
+# It optionally allows the configuration of different deployment environments
+
+name: Deploy to Azure Container App
+on:
+  push:
+    branches:
+      # - main # Uncomment this line to deploy on push to main branch
+      - development
+  workflow_dispatch:
+    inputs:
+      # Uncomment the following lines to allow manual selection of the environment
+#      environment:
+#        description: 'Environment to deploy to'
+#        required: true
+#        type: choice
+#        options:
+#          - {{production-container-app-name}} (e.g., nova-core)
+#          - {{development-container-app-name}} (e.g. nova-core-dev)
+#        default: {{production-container-app-name}}
+      sha:
+        description: 'Deploy from specific commit sha'
+        required: false
+        type: string
+
+env:
+  # Uncomment the following line to set the container app name based on the input or branch (multiple environments)
+  # AZURE_CONTAINER_APP_NAME: ${{ inputs.environment || github.ref == 'refs/heads/main' && '{{ production-container-app-name }}' || '{{ development-container-app-name }}' }}
+  AZURE_CONTAINER_APP_NAME: {{ container-app-name }} # TODO: Replace with your Azure Container App name (e.g. 'nova-core' or 'nova-core-dev')
+  AZURE_RESOURCE_GROUP: {{ container-ressource-group }} # TODO: Replace with your Azure resource group name (e.g. 'nova-group')
+  AZURE_SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AZURE_DEVOPS_TOKEN: ${{ secrets.AZURE_DEVOPS_TOKEN }} # Optional, if you need to interact with Azure DevOps
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  REGISTRY: ghcr.io/serapion-gmbh
+  IMAGE_NAME: {{ image-name }} # TODO: Replace with your Docker image name (e.g. 'nova-core' or 'nova-core-dev')
+  # Add additional environment variables needed for the Azure Container App here use the following format:
+  #  ENVIRONMENT_VARIABLES: >
+  #    ENVIRONMENT_VARIABLE1=value1
+  #    ENVIRONMENT_VARIABLE2=value2
+  #    SECRET_VARIABLE1=secretref:my-secret
+
+jobs:
+  build-and-push:
+    name: Build, Release and Push Docker Image
+    permissions:
+      id-token: write
+      contents: write
+      packages: write
+    # This job triggers the workflow "Build, Test, Release, and Publish Docker Image" (`./.github/actions/docker-publish.yml`).
+    uses: ./.github/workflows/docker-publish.yml
+    secrets:
+      AZURE_DEVOPS_TOKEN: ${{ env.AZURE_DEVOPS_TOKEN }}
+
+
+  deploy-to-azure:
+    name: Deploy to Azure Container App
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: ${{ env.AZURE_CONTAINER_APP_NAME }}
+      url: ${{ steps.get-url.outputs.app-url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
+          resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
+          imageToDeploy: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.sha || needs.build-and-push.outputs.image-tag }}
+          environmentVariables: ${{ env.ENVIRONMENT_VARIABLES }} || ""
+          disableTelemetry:
+
+      - name: Set output for app URL
+        id: get-url
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            # Get the FQDN of the container app
+            FQDN=$(az containerapp show \
+              --name ${{ env.AZURE_CONTAINER_APP_NAME }} \nova
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --subscription ${{ env.AZURE_SUBSCRIPTION }} \
+              --query properties.configuration.ingress.name \
+              --output tsv)
+            # Get custom domain if set
+            CUSTOM_DOMAIN=$(az containerapp show \
+              --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --subscription ${{ env.AZURE_SUBSCRIPTION }} \
+              --query properties.configuration.ingress.customDomains[0].fqdn \
+              --output tsv)
+      
+            if [ -n "$CUSTOM_DOMAIN" ] && [ "$CUSTOM_DOMAIN" != "null" ]; then
+              APP_URL="https://$CUSTOM_DOMAIN"
+              echo "app-url=$CUSTOM_DOMAIN" >> "$GITHUB_OUTPUT"
+              echo "Container app URL: $APP_URL"
+            elif [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
+              APP_URL="https://$FQDN"
+              echo "app-url=$APP_URL" >> "$GITHUB_OUTPUT"
+              echo "Container app URL: $APP_URL"
+            else
+              echo "No custom domain or FQDN found for the container app."
+              echo "app-url=not-found" >> "$GITHUB_OUTPUT"
+            fi

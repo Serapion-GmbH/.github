@@ -1,0 +1,175 @@
+# This workflow template builds, tests, releases, and publishes a Docker image for a Python project
+# using uv and semantic-release. It includes steps to configure a private Azure DevOps package feed.
+
+name: Build, Test, Release, and Publish Docker Image
+on:
+  push:
+    # Match all branches *without* a / in the name.
+    # This will exclude "sub" branches, such as feature branches.
+    branches:
+      - '*'
+  pull_request:
+    # Match all branches (including branches *with* a / in the name.
+    branches:
+      - '**'
+  release:
+    types: [ published, edited ]
+  # This workflow can be triggered by the other workflows, such as a "deploy" workflow.
+  workflow_call:
+    secrets:
+      AZURE_DEVOPS_TOKEN:
+        description: 'Azure DevOps token for accessing private packages'
+        required: true
+    outputs:
+      version:
+        description: 'Released version'
+        value: ${{ jobs.release.outputs.version }}
+      image-digest:
+        description: 'Docker image digest'
+        value: ${{ jobs.build-and-push.outputs.digest }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: # TODO: Update with your image name, e.g., serapion-gmbh/nova-core
+  PACKAGE_NAME: # TODO: Update with your package name, e.g., nova_core (check the `pyproject.toml` file for the project name)
+  AZURE_DEVOPS_TOKEN: ${{ secrets.AZURE_DEVOPS_TOKEN }} # TODO: Ensure this secret is set in your repository settings if you need to access private packages from Azure DevOps
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      python-version: ${{ steps.setup-python.outputs.python-version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        id: setup-python
+        run: |
+          uv python install
+          echo "python-version=$(uv python pin)" >> $GITHUB_OUTPUT
+
+      # (optional) If you need to access private packages from Azure DevOps, set up .netrc
+      - name: Setup .netrc
+        uses: extractions/netrc@v2
+        with:
+          machine: pkgs.dev.azure.com
+          username: __token__
+          password: ${{ env.AZURE_DEVOPS_TOKEN }}
+
+      - name: Install dependencies
+        run: uv sync --locked --extra ci
+
+      - name: Lint with ruff
+        run: |
+          uv run ruff check --output-format=github
+          uv run ruff format --check
+
+      - name: Run tests
+        run: |
+          uv run py.test
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    concurrency: release
+    permissions:
+      id-token: write
+      contents: write
+    needs: build-and-test
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release_version.outputs.version }}
+      released: ${{ steps.semantic-release.outputs.released }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Setup .netrc
+        uses: extractions/netrc@v2
+        with:
+          machine: pkgs.dev.azure.com
+          username: __token__
+          password: ${{ env.AZURE_DEVOPS_TOKEN }}
+
+      - name: Python Semantic Release
+        id: semantic-release
+        uses: python-semantic-release/python-semantic-release@v10.2.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: "GitHub Actions"
+          git_committer_email: "noreply.actions@serapion.net"
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # (optional) If you need to access private packages from Azure DevOps, set up .netrc
+      - name: Setup .netrc
+        uses: extractions/netrc@v2
+        with:
+          machine: pkgs.dev.azure.com
+          username: __token__
+          password: ${{ secrets.AZURE_DEVOPS_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # This will generate tags like `ghcr.io/serapion-gmbh/nova-core:1.0.0` `ghcr.io/serapion-gmbh/nova-core:latest`
+      # and `ghcr.io/serapion-gmbh/nova-core:sha-<commit-sha>`
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && needs.release.outputs.released == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.release.outputs.version }},enable=${{ needs.release.outputs.version != '' }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+           # If you need to access private packages from Azure DevOps, pass the .netrc file as a secret
+          secret-files: |
+            netrc=/home/runner/.netrc
