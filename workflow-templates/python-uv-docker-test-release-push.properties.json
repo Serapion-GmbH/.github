@@ -1,0 +1,14 @@
+{
+  "name": "Serapion GmbH Python CI Workflow Template",
+  "description": "Custom Python Continuous Integration workflow template of the Serapion GmbH.",
+  "iconName": "octicon beaker",
+  "categories": [
+    "continuous-integration",
+    "testing"
+  ],
+  "filePatterns": [
+    "^uv.lock",
+    "^Dockerfile",
+    "pyproject.toml"
+  ]
+}

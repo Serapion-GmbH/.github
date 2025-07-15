@@ -1,0 +1,12 @@
+{
+  "name": "Serapion GmbH React+Vite CI Workflow Template",
+  "description": "Custom React+Vite Continuous Integration workflow template of the Serapion GmbH.",
+  "iconName": "octicon beaker",
+  "categories": [
+    "continuous-integration",
+    "testing"
+  ],
+  "filePatterns": [
+    "^package.json"
+  ]
+}

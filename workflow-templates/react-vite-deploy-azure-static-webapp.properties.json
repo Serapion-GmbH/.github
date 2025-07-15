@@ -1,0 +1,11 @@
+{
+  "name": "Serapion GmbH React+Vite CD Workflow Template",
+  "description": "Custom React+Vite Continues Deployment workflow template of the Serapion GmbH.",
+  "iconName": "octicon package-dependents",
+  "categories": [
+    "deployment"
+  ],
+  "filePatterns": [
+    "^package.json"
+  ]
+}

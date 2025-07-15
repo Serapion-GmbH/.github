@@ -1,0 +1,13 @@
+{
+  "name": "Serapion GmbH Python CD Workflow Template",
+  "description": "Custom Python Continuous Deployment workflow template for Azure Container Apps of the Serapion GmbH.",
+  "iconName": "octicon package-dependents",
+  "categories": [
+    "deployment"
+  ],
+  "filePatterns": [
+    "^uv.lock",
+    "^Dockerfile",
+    "pyproject.toml"
+  ]
+}
